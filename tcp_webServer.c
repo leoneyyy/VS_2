@@ -65,68 +65,80 @@ void err_abort(char *str) {
 }
 
 void str_echo(int sockfd, char *docroot) {
-    char buffer[1024];
-    char path[512];
-    char line[1024];
-    char response_header[1024];
+    char buffer[2048];
+    char path[512], line[1024], fullpath[1024], response_header[1024];
     int n;
-
+    // Hier wird die Anfrage des Clients gelesen und in den Buffer geschrieben. Es wird darauf geachtet, dass der Buffer nicht überläuft.
     n = read(sockfd, buffer, sizeof(buffer) - 1);
     if (n <= 0) return;
     buffer[n] = '\0';
 
-    if (sscanf(buffer, "%*s %s", path) != 1) return;
+    // Es wird nach einer GET-Anfrage gesucht und der Pfad extrahiert. Wenn die Anfrage nicht im richtigen Format ist, wird die Funktion verlassen.
+    if (sscanf(buffer, "GET %s", path) != 1) return;
 
-    // Pfad-Logik (Vermeidung von //)
-    char fullpath[1024];
-    int root_len = strlen(docroot);
-    if (root_len > 0 && docroot[root_len - 1] == '/' && path[0] == '/') {
-        snprintf(fullpath, sizeof(fullpath), "%s%s", docroot, path + 1);
-    } else {
-        snprintf(fullpath, sizeof(fullpath), "%s%s", docroot, path);
+    // Hier wird überprüft, ob der Pfad mit einem '/' endet. Wenn ja, wird das '/' entfernt, um später die korrekte Dateipfad zu erstellen.
+    int path_len = strlen(path);
+    if (path_len > 1 && path[path_len - 1] == '/') {
+        path[path_len - 1] = '\0';
     }
 
+    // Hier wird der vollständige Pfad zur angeforderten Ressource erstellt, indem der Dokumentenstamm (docroot) mit dem angeforderten Pfad kombiniert wird.
+    // Es wird darauf geachtet, dass kein doppeltes '/' entsteht.
+    char *p = path;
+    if (p[0] == '/') p++;
+    int root_len = strlen(docroot);
+    if (docroot[root_len - 1] == '/') {
+        snprintf(fullpath, sizeof(fullpath), "%s%s", docroot, p);
+    } else {
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", docroot, p);
+    }
+
+    // Hier wird überprüft, ob die angeforderte Ressource existiert und ob es sich um ein Verzeichnis oder eine Datei handelt.
+    // Wenn die Ressource nicht existiert, wird eine 404-Fehlerantwort gesendet.
     struct stat path_stat;
     if (stat(fullpath, &path_stat) < 0) {
-        // DEBUG: Zeigt uns im Terminal den genauen Systemfehler (z.B. No such file or directory)
-        perror("Fehler bei stat()");
-        printf("Versuchter Zugriff auf: '%s'\n", fullpath);
-
-        const char *not_found = "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n<h1>404 - Datei nicht gefunden</h1>";
+        perror("stat-Fehler");
+        const char *not_found = "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n<h1>404 Not Found</h1>";
         write(sockfd, not_found, strlen(not_found));
         return;
     }
 
+    // Wenn die Ressource ein Verzeichnis ist, wird eine HTML-Seite mit einer Auflistung der Dateien und Unterverzeichnisse erstellt.
+    // Es werden nur Verzeichnisse und Dateien mit den Endungen .html, .jpg und .png angezeigt.
     if (S_ISDIR(path_stat.st_mode)) {
         DIR *d = opendir(fullpath);
-        struct dirent *entry;
         if (d) {
-            const char *header = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
-            write(sockfd, header, strlen(header));
+            write(sockfd, "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n", 44);
+            write(sockfd, "<html><body><h1>Index von Verzeichnis</h1><ul>\n", 47);
 
-            write(sockfd, "<html><body><h1>Index</h1><ul>\n", 31);
+            struct dirent *entry;
             while ((entry = readdir(d)) != NULL) {
-                sprintf(line, "<li><a href=\"%s\">%s</a></li>\n", entry->d_name, entry->d_name);
-                write(sockfd, line, strlen(line));
+                struct stat entry_stat;
+                char entry_fullpath[2048];
+                snprintf(entry_fullpath, sizeof(entry_fullpath), "%s/%s", fullpath, entry->d_name);
+                stat(entry_fullpath, &entry_stat);
+
+                if (S_ISDIR(entry_stat.st_mode) || strstr(entry->d_name, ".html") ||
+                    strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png")) {
+
+                    sprintf(line, "<li><a href=\"%s/%s\">%s</a></li>\n",
+                            strcmp(path, "/") == 0 ? "" : path, entry->d_name, entry->d_name);
+                    write(sockfd, line, strlen(line));
+                }
             }
-            write(sockfd, "</ul></body></html>\n", 20);
+            write(sockfd, "</ul></body></html>", 19);
             closedir(d);
             return;
         }
     }
-
-    // DATEI-MODUS
+    
     FILE *file = fopen(fullpath, "rb");
-    if (file == NULL) {
-        const char *not_found = "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n<h1>Datei konnte nicht geoeffnet werden</h1>";
-        write(sockfd, not_found, strlen(not_found));
-        return;
-    }
+    if (file == NULL) return;
 
     const char *mime_type = "text/plain";
-    if (strstr(path, ".html")) mime_type = "text/html";
-    else if (strstr(path, ".jpg") || strstr(path, ".jpeg")) mime_type = "image/jpeg";
-    else if (strstr(path, ".png")) mime_type = "image/png";
+    if (strstr(fullpath, ".html") || strstr(fullpath, ".htm")) mime_type = "text/html";
+    else if (strstr(fullpath, ".jpg") || strstr(fullpath, ".jpeg")) mime_type = "image/jpeg";
+    else if (strstr(fullpath, ".png")) mime_type = "image/png";
 
     sprintf(response_header, "HTTP/1.0 200 OK\r\nContent-Type: %s\r\n\r\n", mime_type);
     write(sockfd, response_header, strlen(response_header));
