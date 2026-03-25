@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <signal.h>
 
 void str_echo(int sockfd, char *docroot);
 void err_abort(char *str);
@@ -17,6 +18,7 @@ int main(int argc, char *argv[]) {
 
     struct sockaddr_in srv_addr;
     int sockfd, newsockfd, pid;
+    signal(SIGCHLD, SIG_IGN);
     if(argc < 3){
         fprintf(stderr, "Syntax: %s <docroot> <port>\n", argv[0]);
         exit(1);
@@ -66,7 +68,7 @@ void err_abort(char *str) {
 
 void str_echo(int sockfd, char *docroot) {
     char buffer[2048];
-    char path[512], line[1024], fullpath[1024], response_header[1024];
+    char path[512], line[2048], fullpath[1024], response_header[1024];
     int n;
     // Hier wird die Anfrage des Clients gelesen und in den Buffer geschrieben. Es wird darauf geachtet, dass der Buffer nicht überläuft.
     n = read(sockfd, buffer, sizeof(buffer) - 1);
@@ -121,7 +123,7 @@ void str_echo(int sockfd, char *docroot) {
                 if (S_ISDIR(entry_stat.st_mode) || strstr(entry->d_name, ".html") ||
                     strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png")) {
 
-                    sprintf(line, "<li><a href=\"%s/%s\">%s</a></li>\n",
+                    snprintf(line,sizeof(line) ,"<li><a href=\"%s/%s\">%s</a></li>\n",
                             strcmp(path, "/") == 0 ? "" : path, entry->d_name, entry->d_name);
                     write(sockfd, line, strlen(line));
                 }
