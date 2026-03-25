@@ -23,30 +23,38 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Syntax: %s <docroot> <port>\n", argv[0]);
         exit(1);
     }
-
+    // Hier wird ein TCP-Socket erstellt. Es wird überprüft, ob der Socket erfolgreich erstellt wurde.
     if((sockfd=socket(AF_INET, SOCK_STREAM, 0)) < 0){
         err_abort((char*) "Kann Stream-Socket nicht oeffnen!");
     }
 
+    // Hier wird die Serveradresse (srv_addr) mit den entsprechenden Werten initialisiert.
     memset((void *)&srv_addr, '\0', sizeof(srv_addr));
+    // Steht für die Adressfamilie (IPv4) des Servers. Es gibt an, dass der Server IPv4-Adressen verwenden wird.
     srv_addr.sin_family = AF_INET;
+    // Steht für die IP-Adresse des Servers. INADDR_ANY bedeutet, dass der Server auf allen verfügbaren Netzwerkinterfaces lauschen wird.
     srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     //Hier wird der richtige Port übergeben, damit der Server auf diesem Port startet
     srv_addr.sin_port = htons(atoi(argv[2]));
+    // Hier wird der Socket an die Serveradresse gebunden. Es wird überprüft, ob die Bindung erfolgreich war.
     if(bind(sockfd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0){
         err_abort((char*) "Kann lokale Adresse nicht binden, laeuft fremder Server?");
     }
-
+    // Hier wird der Socket in den Listenmodus versetzt, damit er Verbindungsanfragen von Clients akzeptieren kann.
     listen(sockfd, 5);
 
     for(;;) {
+
+        // Hier wird auf eine eingehende Verbindungsanfrage eines Clients gewartet.
         struct sockaddr_in cli_addr;
         socklen_t alen = sizeof(cli_addr);
+        // Wenn eine Verbindungsanfrage eingeht, wird ein neuer Socket (newsockfd) erstellt, um die Verbindung mit dem Client zu handhaben.
         newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &alen);
         if (newsockfd < 0) {
             err_abort((char *) "Fehler beim Verbindungsaufbau!");
         }
-
+        // Hier wird ein neuer Prozess erstellt, um die Verbindung mit dem Client zu handhaben. Der Kindprozess wird die Funktion str_echo aufrufen,
+        // um die Anfragen des Clients zu bearbeiten, während der Elternprozess weiterhin auf neue Verbindungsanfragen wartet.
         if ((pid = fork()) < 0) {
             err_abort((char *) "Fehler beim Fork!");
         } else if (pid == 0) {
@@ -67,6 +75,7 @@ void err_abort(char *str) {
 }
 
 void str_echo(int sockfd, char *docroot) {
+
     char buffer[2048];
     char path[512], line[2048], fullpath[1024], response_header[1024];
     int n;
@@ -74,6 +83,8 @@ void str_echo(int sockfd, char *docroot) {
     n = read(sockfd, buffer, sizeof(buffer) - 1);
     if (n <= 0) return;
     buffer[n] = '\0';
+
+    printf("\n--- NEUE ANFRAGE VON BROWSER ---\n%s\n-------------------------------\n", buffer);
 
     // Es wird nach einer GET-Anfrage gesucht und der Pfad extrahiert. Wenn die Anfrage nicht im richtigen Format ist, wird die Funktion verlassen.
     if (sscanf(buffer, "GET %s", path) != 1) return;
