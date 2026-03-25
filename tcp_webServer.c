@@ -6,6 +6,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 void str_echo(int sockfd, char *docroot);
 void err_abort(char *str);
@@ -63,32 +65,75 @@ void err_abort(char *str) {
 }
 
 void str_echo(int sockfd, char *docroot) {
-    char buffer[512];
+    char buffer[1024];
     char path[512];
+    char line[1024];
+    char response_header[1024];
     int n;
 
-    n = read(sockfd, buffer, sizeof(buffer));
-    if (n < 0) {
-        err_abort((char *) "Fehler beim Lesen vom Socket!");
+    n = read(sockfd, buffer, sizeof(buffer) - 1);
+    if (n <= 0) return;
+    buffer[n] = '\0';
+
+    if (sscanf(buffer, "%*s %s", path) != 1) return;
+
+    // Pfad-Logik (Vermeidung von //)
+    char fullpath[1024];
+    int root_len = strlen(docroot);
+    if (root_len > 0 && docroot[root_len - 1] == '/' && path[0] == '/') {
+        snprintf(fullpath, sizeof(fullpath), "%s%s", docroot, path + 1);
+    } else {
+        snprintf(fullpath, sizeof(fullpath), "%s%s", docroot, path);
     }
 
-    sscanf(buffer, "%*s %s", path);
-    char fullpath[512];
-    snprintf(fullpath, sizeof(fullpath), "%s%s", docroot, path);
+    struct stat path_stat;
+    if (stat(fullpath, &path_stat) < 0) {
+        // DEBUG: Zeigt uns im Terminal den genauen Systemfehler (z.B. No such file or directory)
+        perror("Fehler bei stat()");
+        printf("Versuchter Zugriff auf: '%s'\n", fullpath);
 
-    FILE *file = fopen(fullpath, "r");
-    if (file == NULL) {
-        const char *not_found = "HTTP/1.0 404 Not Found\r\n\r\n";
+        const char *not_found = "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n<h1>404 - Datei nicht gefunden</h1>";
         write(sockfd, not_found, strlen(not_found));
         return;
     }
 
-    const char *ok_response = "HTTP/1.0 200 OK\r\n\r\n";
-    write(sockfd, ok_response, strlen(ok_response));
+    if (S_ISDIR(path_stat.st_mode)) {
+        DIR *d = opendir(fullpath);
+        struct dirent *entry;
+        if (d) {
+            const char *header = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
+            write(sockfd, header, strlen(header));
 
-    while (fread(buffer, sizeof(buffer), file) != NULL) {
-        write(sockfd, buffer, strlen(buffer));
+            write(sockfd, "<html><body><h1>Index</h1><ul>\n", 31);
+            while ((entry = readdir(d)) != NULL) {
+                sprintf(line, "<li><a href=\"%s\">%s</a></li>\n", entry->d_name, entry->d_name);
+                write(sockfd, line, strlen(line));
+            }
+            write(sockfd, "</ul></body></html>\n", 20);
+            closedir(d);
+            return;
+        }
     }
 
+    // DATEI-MODUS
+    FILE *file = fopen(fullpath, "rb");
+    if (file == NULL) {
+        const char *not_found = "HTTP/1.0 404 Not Found\r\nContent-Type: text/html\r\n\r\n<h1>Datei konnte nicht geoeffnet werden</h1>";
+        write(sockfd, not_found, strlen(not_found));
+        return;
+    }
+
+    const char *mime_type = "text/plain";
+    if (strstr(path, ".html")) mime_type = "text/html";
+    else if (strstr(path, ".jpg") || strstr(path, ".jpeg")) mime_type = "image/jpeg";
+    else if (strstr(path, ".png")) mime_type = "image/png";
+
+    sprintf(response_header, "HTTP/1.0 200 OK\r\nContent-Type: %s\r\n\r\n", mime_type);
+    write(sockfd, response_header, strlen(response_header));
+
+    int bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        write(sockfd, buffer, bytes_read);
+    }
     fclose(file);
 }
